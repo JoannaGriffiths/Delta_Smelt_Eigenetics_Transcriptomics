@@ -1,0 +1,786 @@
+---
+title: "Delta Smelt Bisulfite pipeline"
+author: "Joanna Griffiths"
+date: "2023-09-05"
+output: 
+  html_document:
+    toc: true
+---
+
+## Download data from Genome Center
+
+example of how to download data with wget from Delta smelt WGS project:
+
+```{bash eval=FALSE}
+wget -r -nH -nc -R index.html* http://slimsdata.genomecenter.ucdavis.edu/Data/d0eto3hehv/Un_DTSA688/Project_AWJG_AWJG_B/
+```
+
+## Combine all parent files into one file
+
+Because all samples were sequenced across 2 lanes of a NovaSeq I need to combine them into one
+Submit the following script as a job on the cluster:  combine_samples.sh
+I ran this as three jobs, first to unzip all the files, then at the same time, one for the forward reads and one for the reverse reads
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=cat
+#SBATCH --mem=4G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp/joanna/Smelt_meth/output_files/out-%A.%a_cat.txt
+#SBATCH -e /group/awhitehegrp/joanna/Smelt_meth/output_files/error-%A.%a_cat.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+
+cd /group/awhitehegrp2/joanna/Smelt_meth/Data
+gunzip Project_AWJG_Nova781P_Griffiths_L1/*
+gunzip Project_AWJG_Nova781P_Griffiths_L2/*
+
+module load parallel/20220522
+cat sample_names | parallel -j 10 "cat Project_AWJG_Nova781P_Griffiths_L1/{}_*_L001_R1_001.fastq Project_AWJG_Nova781P_Griffiths_L2/{}_*_L002_R1_001.fastq > /group/awhitehegrp/joanna/Smelt_meth/all_lanes/{}_allLanes_R1.fastq"
+cat sample_names | parallel -j 10 "cat Project_AWJG_Nova781P_Griffiths_L1/{}_*_L001_R2_001.fastq Project_AWJG_Nova781P_Griffiths_L2/{}_*_L002_R2_001.fastq > /group/awhitehegrp/joanna/Smelt_meth/all_lanes/{}_allLanes_R2.fastq"
+```
+
+
+
+## FastQC
+
+Now let's check that the quality of all the samples looks good by running FastQC.
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=fastqc
+#SBATCH --mem=4G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp/joanna/Smelt_meth/output_files/out-%A.%a_fastqc.txt
+#SBATCH -e /group/awhitehegrp/joanna/Smelt_meth/output_files/error-%A.%a_fastqc.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+
+cd /group/awhitehegrp/joanna/Smelt_meth
+
+module load fastqc/0.11.9
+module load parallel/20220522
+
+cat sample_names | parallel -j 10 "fastqc all_lanes/{}_allLanes_R1.fastq -o all_lanes/fastqc/"
+cat sample_names | parallel -j 10 "fastqc all_lanes/{}_allLanes_R2.fastq -o all_lanes/fastqc/"
+```
+Need to remove these two samples because of poor sequencing quality (too many PCR duplicates: AWJG395_allLanes and AWJG471_allLanes)
+
+## Trim Adapters
+
+`sbatch -J tg.${USER} --array=1-102 trimgalore.sh`
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=trimgalore
+#SBATCH --mem=10G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp/joanna/Smelt_meth/output_files/out-%A.%a_trimgalore.txt
+#SBATCH -e /group/awhitehegrp/joanna/Smelt_meth/output_files/error-%A.%a_trimgalore.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+start=`date +%s`
+hostname
+
+aklog
+export baseP=/group/awhitehegrp/joanna/Smelt_meth
+export seqP=${baseP}/all_lanes
+export outP=${baseP}/all_lanes/trimgalore
+export cwd=${baseP}/scripts
+
+if [ ! -d "${outP}" ]; then
+   mkdir ${outP}
+fi
+
+echo ${cwd}
+
+module load samtools/1.14
+module load bowtie2/2.4.2
+module load trimgalore/0.6.6
+
+name=`head -n ${SLURM_ARRAY_TASK_ID} ${cwd}/sample_names | tail -1`
+
+
+  R1=$(ls ${seqP}/${name}_*.fastq |grep "_R1." - )
+  R2=$(ls ${seqP}/${name}_*.fastq |grep "_R2." - )
+
+  call="trim_galore -j ${SLURM_NTASKS} --paired -q 30 --stringency 5 --phred33 -e 0.1 --length 20 \
+        --clip_R1 10 --clip_R2 20 --three_prime_clip_R1 10 --three_prime_clip_R2 15 \
+        --output_dir $outP --basename ${name} ${R1} ${R2}"
+  echo $call
+  eval $call
+
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+```
+
+## Bismark Alignment Program
+
+Helpful Links:
+
+https://felixkrueger.github.io/Bismark/
+
+https://github.com/FelixKrueger/Bismark
+
+To prepare theg genome, run `sbatch bismark_genome.sh`
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=bismark
+#SBATCH --mem=10G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp/joanna/Smelt_meth/output_files/out-%A.%a_bismark.txt
+#SBATCH -e /group/awhitehegrp/joanna/Smelt_meth/output_files/error-%A.%a_bismark.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+module load deprecated/bismark/0.22.3
+module load deprecated/bowtie2/2.4.2
+
+cd /group/awhitehegrp/joanna/Smelt_meth
+
+##Prepare the genome
+bismark_genome_preparation --verbose genome
+
+
+```
+
+
+Script for aligning the reads: `bismark_align.sh`. To submit run `sbatch -J bismark.${USER} --array=1-102 bismark_align.sh`
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=bismark
+#SBATCH --mem=10G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp/joanna/Smelt_meth/output_files/out-%A.%a_bismark.txt
+#SBATCH -e /group/awhitehegrp/joanna/Smelt_meth/output_files/error-%A.%a_bismark.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+module load deprecated/bismark/0.22.3
+module load deprecated/bowtie2/2.4.2
+module load samtools/1.14
+
+
+##test if lib are non-directional (they're not since mapping didn't improve)
+#bismark --genome ../genome/ --non_directional -1 fastp/AWJG307_allLanes_R1.fastp -2 fastp/AWJG307_allLanes_R2.fastp -o Bismark_mapping_nondirectinonal/
+
+
+start=`date +%s`
+hostname
+
+aklog
+export baseP=/group/awhitehegrp/joanna/Smelt_meth
+export bamP=${baseP}/all_lanes/Bismark_mapping_trimgalore
+export outP=${baseP}/all_lanes/Methylation
+export seqP=${baseP}/all_lanes/trimgalore
+export refP=${baseP}/genome
+export cwd=${baseP}/scripts
+export tmpd=$cwd/tmp
+
+if [ ! -d "${tmpd}" ]
+then
+  mkdir -p ${tmpd}
+fi
+
+
+if [ ! -d "${outP}" ]
+then
+   mkdir -p ${outP}
+fi
+
+if [ ! -d "${bamP}" ]
+then
+   mkdir -p ${bamP}
+fi
+
+
+
+name=`head -n ${SLURM_ARRAY_TASK_ID} sample_names | tail -1`
+
+cd $bamP
+
+# create soft link for qced read fastq files
+ln -s ${seqP}/${name}_val_1.fq ./input${name}_R1_001.fq
+ln -s ${seqP}/${name}_val_2.fq ./input${name}_R2_001.fq
+
+# bismark alignment
+bismark --bowtie2 -p 4 --output_dir ./ --rg_tag --rg_id ${name} --rg_sample ${name} --prefix ${name} --unmapped --temp_dir ${tmpd} --phred33-quals --fastq --genome_folder $refP -1 input${name}_R1_001.fq -2 input${name}_R2_001.fq > ./${name}.bismark.out
+
+# bismark deduplicate
+deduplicate_bismark --bam --paired --output_dir ./ ${name}.input${name}_R1_001_bismark_bt2_pe.bam
+
+# bismark M bias
+bismark_methylation_extractor -p --merge_non_CpG --gzip --no_overlap --mbias_only --output ${outP} --parallel 8 --buffer_size 72G --genome_folder $refP ${bamP}/${name}.input${name}_R1_001_bismark_bt2_pe.deduplicated.bam
+
+# generate bismark reports
+bismark2report --dir $outP --output ${name}.bismark.report.html --alignment_report $bamP/${name}.input${name}_R1_001_bismark_bt2_PE_report.txt --dedup_report $bamP/${name}.input${name}_R1_001_bismark_bt2_pe.deduplication_report.txt --splitting_report $outP/${name}.input${name}_R1_001_bismark_bt2_pe.deduplicated_splitting_report.txt --mbias_report $outP/${name}.input${name}_R1_001_bismark_bt2_pe.deduplicated.M-bias.txt
+
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+```
+
+
+In order to run MultiQC on the results of bismark, we are going to create a file that lists all of the relevant files and use it as input to MultiQC.
+```{bash eval=FALSE}
+
+ls /group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Bismark_mapping_trimgalore/*_PE_report.txt > Reports/input2.fofn
+ls /group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Bismark_mapping_trimgalore/*.deduplication_report.txt >> Reports/input2.fofn
+ls /group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Methylation/*.M-bias.txt >> Reports/input2.fofn
+ls /group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Methylation/*_splitting_report.txt >> Reports/input2.fofn
+```
+
+
+Now run multiQC `multiqc_bismark.sh`:
+```{bash eval=FALSE}
+
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=multiqc
+#SBATCH --mem=10G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_multiqc.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_multiqc.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p high
+
+start=`date +%s`
+hostname
+
+aklog
+export baseP=/group/awhitehegrp3/joanna/Smelt_meth/all_lanes
+export outP=${baseP}/Reports
+export tmpP=$cwd/tmp
+
+
+if [ ! -d "${tmpP}" ]; then
+   mkdir ${tmpP}
+fi
+
+module load deprecated/multiqc/bio3
+
+cd ${baseP}
+call="multiqc -f -o $outP/ $outP/input2.fofn"
+echo $call
+eval $call
+
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+```
+
+
+
+
+## Mapping Coverage Across Genome
+
+Once we have the mapping results, we can also check the genomewide coverage using Qualimap.
+http://qualimap.conesalab.org/doc_html/index.html
+
+See scripts below!
+Submit:
+`jobid=$(sbatch -J qms.${USER} --array=1-102 qualimap_single.sh |cut -d' ' -f4 - )`
+`sbatch -J qmm.${USER} --dependency=afterok:${jobid} qualimap_multi.sh`
+
+Contents of `qualimap_single.sh`
+```{bash eval=FALSE}
+
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=qualimap
+#SBATCH --mem=60G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_qualimap.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_qualimap.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p high
+
+start=`date +%s`
+hostname
+
+export baseP=/group/awhitehegrp3/joanna/Smelt_meth
+export bamP=${baseP}/all_lanes/Bismark_mapping_trimgalore
+export seqP=${baseP}/all_lanes/trimgalore
+export refP=${baseP}/genome
+export cwd=${baseP}/scripts
+
+
+if [ ! -d "${bamP}" ]; then
+   mkdir ${bamP}
+fi
+
+module load samtools/1.13
+module load qualimap/2.2.1
+module load jdk/17.0.1
+
+cd ${baseP}
+name=`head -n ${SLURM_ARRAY_TASK_ID} sample_names | tail -1`
+
+export outP=${baseP}/all_lanes/Qualimap/${name}
+
+if [ ! -d "${outP}" ]; then
+   mkdir -p ${outP}
+fi
+
+samtools sort -@ ${SLURM_NTASKS} -m 10G -o $bamP/${name}.input${name}_R1_001_bismark_bt2_pe.dedup.sorted.bam $bamP/${name}.input${name}_R1_001_bismark_bt2_pe.deduplicated.bam
+
+qualimap bamqc --java-mem-size=40G -bam ${bamP}/${name}.input${name}_R1_001_bismark_bt2_pe.dedup.sorted.bam -nt ${SLURM_NTASKS} -c -oc $outP/${name}.qualimap.txt -outdir ${outP} -outfile ${name}.html -outformat html
+
+
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+
+```
+
+
+Contents of `qualimap_multi.sh`:
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=qualimap
+#SBATCH --mem=60G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_qualimap_multi.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_qualimap_multi.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p high
+
+start=`date +%s`
+hostname
+
+export baseP=/group/awhitehegrp3/joanna/Smelt_meth
+export datP=${baseP}/all_lanes/Qualimap
+export seqP=${baseP}/all_lanes/trimgalore
+export refP=${baseP}/genome
+export cwd=${baseP}/scripts
+
+
+module load samtools/1.13
+module load qualimap/2.2.1
+module load jdk/17.0.1
+
+cd ${baseP}
+n=$(wc -l sample_names |cut -d' ' -f1 )
+
+for i in $( eval echo {1..${n}} )
+do
+  sample=$(sed "${i}q;d" sample_names)
+  if [ $i -lt 4 ]
+  then
+    grp="group_1"
+  else
+    grp="group_2"
+  fi
+  echo -e "${sample}\t${datP}/${sample}\t${grp}" >> input.fofn
+done
+
+
+qualimap multi-bamqc -d input.fofn -outdir $datP 
+
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+
+```
+
+
+## Bismark Call Methylation
+
+In this script, we run the command “bismark_methylation_extractor”, with the option of having the non-CpG sites merged in one file (“–merge_non_CpG”). Because the library is directional, we will use the option “–comprehensive” to pool methylation to single context-dependent files. One very important parameter is “–no_overlap” when the sequencing reads are paired-end. This parameter will prevent the double counting of a methylation in the overlapping portion of the paired-end reads when relevant. In addition, we use “-p/–paired-end” parameter to inform Bismark that our reads are in paired-end format. we use “–mbias_off” to prevent Bismark to calculate the M-bias again, which we have done in the previous step. We also use “–bedgraph” to produce tab delimited files for methylation counts.
+
+In the case where we decide to trim off more bases from looking at the M-bias plot, we can use the options “–ignore”, “–ignore_r2”, “–ignore_3prime”, “–ignore_3prime_r2” to achieve that.
+
+To submit: `sbatch -J bm2.${USER} --array=1-102 bismark_methyl.sh`
+```{bash eval=FALSE}
+
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=methyl
+#SBATCH --mem=60G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_bismark_meth.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_bismark_meth.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+start=`date +%s`
+hostname
+
+aklog
+
+export baseP=/group/awhitehegrp3/joanna/Smelt_meth
+export bamP=${baseP}/all_lanes/Bismark_mapping_trimgalore
+export outP=${baseP}/all_lanes/Methylation
+export seqP=${baseP}/all_lanes/trimgalore
+export refP=${baseP}/genome
+export cwd=${baseP}/scripts
+export tmpd=$cwd/tmp
+
+if [ ! -d "${tmpd}" ]
+then
+  mkdir -p ${tmpd}
+fi
+
+
+module load deprecated/bismark/0.22.3
+module load deprecated/bowtie2/2.4.2
+module load samtools/1.14
+
+cd ${baseP}
+name=`head -n ${SLURM_ARRAY_TASK_ID} sample_names | tail -1`
+
+# extract methylation information
+bismark_methylation_extractor -p --merge_non_CpG --gzip --no_overlap --no_header --mbias_off --comprehensive --bedgraph --output ${outP} --parallel 8 --buffer_size 60G --genome_folder $refP ${bamP}/${name}.input${name}_R1_001_bismark_bt2_pe.deduplicated.bam
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+
+
+```
+
+
+Now let's create a CpG_report file using bismark coverage file *cov.*. This is necessary input for the DMRichR R package for doing differential methylation analysis.
+
+To submit: `sbatch -J bm3.${USER} --array=1-102 bismark_CgPreport.sh`
+```{bash eval=FALSE}
+
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=CpG_report
+#SBATCH --mem=60G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_bismark_CpG_report.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_bismark_CpG_report.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p med
+
+start=`date +%s`
+hostname
+
+aklog
+
+export baseP=/group/awhitehegrp3/joanna/Smelt_meth
+export bamP=${baseP}/all_lanes/Bismark_mapping_trimgalore
+export outP=${baseP}/all_lanes/Methylation
+export seqP=${baseP}/all_lanes/trimgalore
+export refP=${baseP}/genome
+export cwd=${baseP}/scripts
+export tmpd=$cwd/tmp
+
+if [ ! -d "${tmpd}" ]
+then
+  mkdir -p ${tmpd}
+fi
+
+module load deprecated/bismark/0.22.3
+module load deprecated/bowtie2/2.4.2
+module load samtools/1.14
+
+cd ${baseP}
+name=`head -n ${SLURM_ARRAY_TASK_ID} sample_names | tail -1`
+
+#coverag2cytosine
+coverage2cytosine --gzip --genome_folder $refP -o ${outP}/${name} ${outP}/${name}.input${name}_R1_001_bismark_bt2_pe.deduplicated.bismark.cov.gz
+
+end=`date +%s`
+runtime=$((end - start ))
+echo $runtime
+
+
+```
+
+
+
+## Differential Methylation Analysis
+
+### DMRichR
+
+https://www.benlaufer.com/DMRichR/index.html
+
+After cloning DMRichR from the GitHub directory, I ran the lines below on the command line and the first few hours were installing packages. I only needed to manually install just one package by myself, and then it ran.
+
+```{r, eval=FALSE}
+
+if(!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if(!requireNamespace("remotes", quietly = TRUE))
+  install.packages("remotes")
+Sys.setenv("R_REMOTES_NO_ERRORS_FROM_WARNINGS" = TRUE)
+BiocManager::install("ben-laufer/DMRichR")
+
+```
+
+
+
+I first tried running it with the Zebra fish genome, but that didn't work (Note `danRer11` is the Zebra fish genome annotation (Danio rerio))
+
+I installed the Annotation Database for Delta smelt, created by Ensi. Found here on FARM: `/home/ehabibi/from-millermrgrp4/Methylation/annotationdatabase`
+
+`install.packages('/home/ehabibi/from-millermrgrp4/Methylation/annotationdatabase/BSgeneome.Htranspacificus.NCBI.fHypTra1_1.0.0.tar.gz', repos=NULL, type="source")`
+
+`install.packages('/home/ehabibi/from-millermrgrp4/Methylation/annotationdatabase/TxDb.Htranspacificus.GCF021917145.1fHypTra1genomic.gtf_0.01.tar.gz', repos=NULL, type="source")`
+
+`install.packages('/home/ehabibi/from-millermrgrp4/Methylation/annotationdatabase/org.Ht.ds.db_0.01.tar.gz', repos=NULL, type="source")`
+
+Other R installations:
+`install.packages("optparse")`
+`install.packages("getopt")`
+`install.packages("openxlsx")`
+
+Had to install older version of this package: https://cran.r-project.org/web/packages/matrixStats/news/news.html
+because I kept getting errors that useNames=NA is defunct when running DMRichR
+install.packages("matrixStats", version='1.1.0')
+
+Was having issues with overwriting the original library (version 1.3.0), so I deleted this directory as suggested by farm: /home/jsgriffi/R/x86_64-conda-linux-gnu/4.2/00LOCK-matrixStats
+Then went to cran source and downloaded tar file of the version I wanted then put it on farm and installed like so:
+install.packages("/group/awhitehegrp3/joanna/Smelt_meth/scripts/matrixStats_1.1.0.tar.gz", repos = NULL, verbose = TRUE)
+
+*Note: i got an error about when DMRichR was trying to read in the report files, I don't think it liked the ".1" on the end of the chromosome names. I looked through Ensi's report files and her chromosoes were named differently (chr1...chr26, scaffold_27...). So next I needed to convert all of the names. I did this using a while loop.  The output will have the report names ending with "_new". 
+
+run script `chr_name_convert.sh`
+```{bash eval=FALSE}
+
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=convert
+#SBATCH --mem=20G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_convert.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_convert.txt
+#SBATCH --time=2-20:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p high
+
+
+module load R/4.2.3
+cd /group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Methylation/DMRichR
+
+gunzip *report.txt.gz
+
+while IFS= read -r line; do
+       Rscript --vanilla convert_chr_names.R $line
+done < report_list
+
+##rename the files back to original names without the _new. Do this after moving original files to the directory "old_report_names"
+while IFS= read -r line; do
+       mv ${line}_new $line
+done < report_list
+
+gzip *report.txt
+```
+
+The contents of the Rscript `convert_chr_names.R` looks like this:
+```{r eval=FALSE}
+
+#!/usr/bin/env Rscript
+args = commandArgs(trailingOnly=TRUE)
+
+# test if there is at least one argument: if not, return an error
+if (length(args)==0) {
+  stop("At least one argument must be supplied (input file).n", call.=FALSE)
+}
+
+conv <- read.delim2("chr_names_conversion", header=T)
+
+## program...
+report = read.table(args, header=F)
+colnames(report) <- c("old", "1", "2", "3", "4", "5", "6")
+final_report <- merge(report, conv, by = "old")
+final_report <- final_report[,c(8,2,3,4,5,6,7)]
+
+write.table(final_report, file=paste(args, "_new", sep =""), quote = F,row.names = F,col.names = F,sep="\t")
+```
+
+The contents of the `chr_names_conversion` look like this (all the way to contig 376:
+```{bash eval=FALSE}
+old     new
+NC_061060.1     chr1
+NC_061061.1     chr2
+NC_061062.1     chr3
+NC_061063.1     chr4
+NC_061064.1     chr5
+NC_061065.1     chr6
+NC_061066.1     chr7
+NC_061067.1     chr8
+NC_061068.1     chr9
+```
+
+The contents of the `report_list` file looks like this (for all 102 samples). Note that they are gunzipped:
+```{bash eval=FALSE}
+AWJG301.CpG_report.txt
+AWJG302.CpG_report.txt
+AWJG307.CpG_report.txt
+AWJG308.CpG_report.txt
+AWJG309.CpG_report.txt
+AWJG310.CpG_report.txt
+```
+
+
+Now we can run the DMRichR script:
+
+run script `DiffMethyl.sh`
+```{bash eval=FALSE}
+#!/bin/bash
+
+#SBATCH -D /home/jsgriffi
+#SBATCH --job-name=DiffMethyl
+#SBATCH --mem=60G
+#SBATCH --ntasks=8
+#SBATCH -o /group/awhitehegrp3/joanna/Smelt_meth/output_files/out-%A.%a_DiffMethyl.txt
+#SBATCH -e /group/awhitehegrp3/joanna/Smelt_meth/output_files/error-%A.%a_DiffMethyl.txt
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=jsgriffiths@ucdavis.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p high
+
+cd /group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Methylation/DMRichR
+
+module load R/4.2.3
+module load homer/4.9.1
+
+call="Rscript \
+--vanilla \
+/group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Methylation/DMRichR/DMRichR/R/DM.R \
+--genome fHypTra1 \
+--coverage 1 \
+--perGroup '0.75' \
+--minCpGs 5 \
+--maxPerms 10 \
+--maxBlockPerms 10 \
+--cutoff '0.05' \
+--testCovariate 'Temp' \
+--adjustCovariate 'Replicate' \
+--sexCheck FALSE \
+--GOfuncR TRUE \
+--EnsDb FALSE \
+--cellComposition FALSE \
+--cores 20
+> DMRichR.log 2>&1 &"
+
+echo $call
+eval $call 
+echo $! > save_pid.txt
+
+```
+Needed to manually install just one package by myself, and then it ran.
+
+Error from DMRichR:
+`[read.bismark] Parsing files and constructing valid loci ...
+Error in files[[1L]] : subscript out of bounds
+Calls: <Anonymous> ... .readBismarkAsFWGRanges -> .readBismarkAsDT -> file_path_as_absolute
+In addition: Warning message:
+In dir.create("RData") : 'RData' already exists
+Execution halted`
+
+>> Fixed this by giving it an actually correct Sample_info.xlsx file
+
+Next error:
+sampleNames(bs) == as.character(meta$Name) are not all TRUE
+>> Fixed this by following naming scheme from here: https://github.com/ben-laufer/DMRichR/issues/73
+
+
+conda create --name myhomer homer
+conda activate myhomer
+perl findMotifsGenome.pl HOMER/DMRs.bed fHypTra1 both/ -bg HOMER/background.bed -cpg -size given -p 20 -nomotif
+
+srun -p high -t 2:00:00 --pty R --mem 60G
+srun --partition=high --time=1:00:00 --mem=10G --nodes=1 --pty /bin/bash -il
+https://www.biostars.org/p/444817/
+
+
+```{r, eval=F}
+
+library(DMRichR)
+library(TxDb.Htranspacificus.GCF021917145.1fHypTra1genomic.gtf)
+library(org.Ht.ds.db)
+library(BSgeneome.Htranspacificus.NCBI.fHypTra1)
+
+setwd("/group/awhitehegrp3/joanna/Smelt_meth/all_lanes/Methylation/DMRichR")
+
+load("RData/bsseq.RData")
+load("RData/DMRs.RData")
+#load("RData/bismark.RData")
+#load("RData/settings.RData")
+
+##PLOT DMRs hypo/hyper methylation
+DMRichR::plotDMRs2(bs.filtered,
+  regions = sigRegions,
+  testCovariate = 'Temp',
+  extend = (end(sigRegions) - start(sigRegions) + 1)*2,
+  addRegions = sigRegions,
+##  annoTrack = annoTrack,
+  regionCol = "#FF00001A",
+  lwd = 2,
+  qval = FALSE,
+  stat = FALSE,
+  horizLegend = FALSE)
+
+
+##PLOT PCA
+library(PCAtools)
+library(dplyr)
+
+nmatrix= read.delim2(file= "DMRs/DMR_individual_smoothed_methylation.txt")
+nmatrix2 <- nmatrix[,c(17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115)]
+
+nmatrix2 <- nmatrix2 %>% mutate_if(is.character, as.numeric)
+
+bs_pca <- pca(nmatrix2, metadata = pData(bs.filtered.bsseq), removeVar = 0.1)
+
+PCAtools::biplot(bs_pca, colby = "Temp", colkey = c("blue","red"),
+                pointSize = 6,
+                 lab=NULL,
+                 legendPosition = 'top',
+                 legendLabSize = 16,
+                 legendIconSize = 8.0)
+```
+
+
+ 
+ 
+ 
