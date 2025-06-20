@@ -126,7 +126,7 @@ plot1 <- ggplot(data=LowHigh, aes(x=DI, y=CTM, color=Rear_temp)) +
         strip.background = element_blank(), strip.placement = "outside", strip.text = element_text(size=14))+
   scale_y_continuous(breaks=seq(15,34,1))
 
-family_DI <- read.delim2("C:/Users/joann/OneDrive/Documents/UCDavis/Whitehead_lab/Smelt_sequencing/2021_spawning/Analyses/AlphaAssign/Family_DIs.txt")
+
 temp_family_CTMs_DI <- merge(temp_family_CTMs, family_DI, by="AAFam")
 temp_family_CTMs_DI$Offspring_DI <- as.numeric(temp_family_CTMs_DI$Offspring_DI)
 temp_family_CTMs_DI_L <- subset(temp_family_CTMs_DI, Offspring_DI < 7)
