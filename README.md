@@ -18,7 +18,7 @@
 
 ## WGBS
 
-*Scripts*: Delta-smelt-Bisulfite-pipeline.Rmd (), DMR_Interaction_test.R, DMR_DEG_correlation.R
+*Scripts*: Delta-smelt-Bisulfite-pipeline.Rmd (View the [online version](https://htmlpreview.github.io/?https://github.com/JoannaGriffiths/Delta_Smelt_Eigenetics_Transcriptomics/blob/main/WGBS/Delta-smelt-Bisulfite-pipeline.html), DMR_Interaction_test.R, DMR_DEG_correlation.R
 
 ## Functional Enrichment
 
