@@ -32,7 +32,14 @@ ctm<-subset(ctm, Fish_ID!="001R")
 ######################
 
 LowHigh <- subset(ctm, DI=="L" | DI=="H")
-ctm.model2.4 = lmer(orderNorm_CTM ~ DI*Rear_temp + FL + (1|System:DI), data = LowHigh)
+
+##Add in pedigree info
+pedigree <- read.table("all_pedigree_meta_DI.txt", header=T)
+family_DI <- read.delim2("Family_DIs.txt")
+ctm_pedigree <- merge(pedigree, LowHigh, by="Fish_ID", all.y = T)
+ctm_pedigree_DI <- merge(ctm_pedigree, family_DI, by="AAFam")
+
+ctm.model2.4 = lmer(orderNorm_CTM ~ DI*Rear_temp + FL + (1|System:DI), data = ctm_pedigree_DI)
 Anova(ctm.model2.4, test.statistic = "F")
 '''
                    F Df Df.res   Pr(>F)   
@@ -41,6 +48,9 @@ Rear_temp    20.498  1    5.08  0.006004 **
 FL           66.274  1 1518.50 8.093e-16 ***
 DI:Rear_temp  0.005  1    4.01  0.947002 
 '''
+lsmeans(ctm.model2.4, list(pairwise ~ DI*Rear_temp), adjust = "tukey") 
+
+
 ########################
 
 
@@ -61,20 +71,49 @@ treatment_family_count <- ctm_pedigree %>%
   group_by(Rear_temp, Rep, AAFam) %>%
   count(AAFam)
 
+big_fams <- subset(treatment_family_count, n >0)  #1
+big_fams$Treatment <- paste(big_fams$Rear_temp, big_fams$Rep, big_fams$AAFam, sep = "_")
+big_fams_list <- data.frame(big_fams$Treatment)
+colnames(big_fams_list) <- "Treatment"
 
 
 #get means for each family by temperature
-temp_family_CTMs <- ctm_pedigree %>%
-  group_by(Rear_temp, AAFam) %>%
-  summarise(mean_ctm = mean(CTM, na.rm=TRUE))
+#temp_family_CTMs <- ctm_pedigree %>%
+#  group_by(Rear_temp, AAFam) %>%
+#  summarise(mean_ctm = mean(CTM, na.rm=TRUE))
 
-slopes <- temp_family_CTMs %>%
+temp_family_CTMs_Rep <- ctm_pedigree %>%
+  group_by(Rear_temp, Rep, AAFam) %>%
+  summarise(mean_ctm = mean(CTM, na.rm=TRUE))
+temp_family_CTMs_Rep$Treatment <- paste(temp_family_CTMs_Rep$Rear_temp, temp_family_CTMs_Rep$Rep, temp_family_CTMs_Rep$AAFam, sep = "_")
+
+
+temp_family_CTMs_Rep_big_fams <- merge(temp_family_CTMs_Rep, big_fams_list, by="Treatment", all.y =T)
+temp_family_CTMs_Rep_big_fams$Temp_Rep <- paste(temp_family_CTMs_Rep_big_fams$Rear_temp, temp_family_CTMs_Rep_big_fams$Rep, sep = "_")
+
+slopes_Rep <- temp_family_CTMs_Rep_big_fams %>%
   group_by(AAFam) %>%
-  filter(n_distinct(Rear_temp) > 1) %>%  # Only keep families with both temps
+  filter(n_distinct(Temp_Rep) == 4)
+
+#slopes <- temp_family_CTMs %>%
+#  group_by(AAFam) %>%
+#  filter(n_distinct(Rear_temp) > 1) %>%  # Only keep families with both temps
+#  summarize(slope = coef(lm(mean_ctm ~ Rear_temp))[2]) #2 keeps only slopes
+
+#slopes_Rep <- temp_family_CTMs_Rep_big_fams %>%
+#  group_by(AAFam) %>%
+#  filter(n_distinct(Rep) == 2) %>%  # Only keep families with both temps
+#  summarize(slope = coef(lmer(mean_ctm ~ Rear_temp + (1|Rep)))[2])
+
+###
+slopes_final <- slopes_Rep %>%
+  group_by(AAFam) %>%
   summarize(slope = coef(lm(mean_ctm ~ Rear_temp))[2]) #2 keeps only slopes
 
+slopes <- slopes_final
+###
 
-family_DI <- read.delim2("C:/Users/joann/OneDrive/Documents/UCDavis/Whitehead_lab/Smelt_sequencing/2021_spawning/Analyses/AlphaAssign/Family_DIs.txt")
+family_DI <- read.delim2("Family_DIs.txt")
 
 
 slope_DI <- merge(slopes, family_DI, by="AAFam")
@@ -95,11 +134,18 @@ slope_DI_LH$DI <- factor(slope_DI_LH$DI,levels = c("L", "H"))
 
 slopes.model1 = lm(slope ~ DI, data = slope_DI_LH)
 Anova(slopes.model1, test.statistic = "F")
-'''
+''' ## with family greater than 0
 Response: slope
-          Sum Sq Df F value   Pr(>F)   
-DI        12.013  1  9.0801 0.003902 **
-Residuals 72.763 55 
+          Sum Sq Df F value  Pr(>F)  
+DI         9.049  1  5.4874 0.02318 *
+Residuals 82.452 50   
+'''
+
+''' ## with family greater than 1
+Response: slope
+          Sum Sq Df F value  Pr(>F)  
+DI         3.701  1   4.281 0.04558 *
+Residuals 31.986 37   
 '''
 
 
@@ -191,6 +237,7 @@ ggplot(data=count_DI_LH, aes(x=n, fill=DI)) +
   geom_density( color="#e9ecef", alpha=0.6, position = 'identity') +
   scale_fill_manual(values=c( "lightsalmon", "lightsteelblue3")) +
   labs(fill="")
+
 
 
 
