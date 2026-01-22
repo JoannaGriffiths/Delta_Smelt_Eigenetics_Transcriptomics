@@ -39,13 +39,35 @@ family_DI <- read.delim2("Family_DIs.txt")
 ctm_pedigree <- merge(pedigree, LowHigh, by="Fish_ID", all.y = T)
 ctm_pedigree_DI <- merge(ctm_pedigree, family_DI, by="AAFam")
 
+ctm.model2.4 = lmer(orderNorm_CTM ~ DI*Rear_temp + FL + (1|System:DI), data = ctm_pedigree_DI)
+Anova(ctm.model2.4, test.statistic = "F")
+'''
+                   F Df Df.res   Pr(>F)
+DI           28.450  1    4.01  0.005916 **
+Rear_temp    20.498  1    5.08  0.006004 **
+FL           66.274  1 1518.50 8.093e-16 ***
+DI:Rear_temp  0.005  1    4.01  0.947002
+'''
+lsmeans(ctm.model2.4, list(pairwise ~ DI*Rear_temp), adjust = "tukey")
+
+
+########################
+
+
+
+##Add in pedigree info
+pedigree <- read.table("all_pedigree_meta_DI.txt", header=T)
+family_DI <- read.delim2("Family_DIs.txt")
+ctm_pedigree <- merge(pedigree, LowHigh, by="Fish_ID", all.y = T)
+ctm_pedigree_DI <- merge(ctm_pedigree, family_DI, by="AAFam")
+
 LowHigh_ctm_pedigree_DI <- subset(ctm_pedigree_DI, assigned_DI=="L" | assigned_DI=="H")
 ctm.model2.4 = lmer(orderNorm_CTM ~ assigned_DI*Rear_temp + FL + (1|System:DI) + (1|Trial), data = LowHigh_ctm_pedigree_DI)
 Anova(ctm.model2.4, test.statistic = "F")
 '''
-                           F Df  Df.res    Pr(>F)    
-assigned_DI           23.6572  1    4.84  0.005022 ** 
-Rear_temp              9.9948  1    5.53  0.021816 *  
+                           F Df  Df.res    Pr(>F)
+assigned_DI           23.6572  1    4.84  0.005022 **
+Rear_temp              9.9948  1    5.53  0.021816 *
 FL                    61.9056  1 1156.09 8.232e-15 ***
 assign
 '''
@@ -64,20 +86,49 @@ treatment_family_count <- ctm_pedigree %>%
   group_by(Rear_temp, Rep, AAFam) %>%
   count(AAFam)
 
+big_fams <- subset(treatment_family_count, n >0)  #1
+big_fams$Treatment <- paste(big_fams$Rear_temp, big_fams$Rep, big_fams$AAFam, sep = "_")
+big_fams_list <- data.frame(big_fams$Treatment)
+colnames(big_fams_list) <- "Treatment"
 
 
 #get means for each family by temperature
-temp_family_CTMs <- ctm_pedigree %>%
-  group_by(Rear_temp, AAFam) %>%
-  summarise(mean_ctm = mean(CTM, na.rm=TRUE))
+#temp_family_CTMs <- ctm_pedigree %>%
+#  group_by(Rear_temp, AAFam) %>%
+#  summarise(mean_ctm = mean(CTM, na.rm=TRUE))
 
-slopes <- temp_family_CTMs %>%
+temp_family_CTMs_Rep <- ctm_pedigree %>%
+  group_by(Rear_temp, Rep, AAFam) %>%
+  summarise(mean_ctm = mean(CTM, na.rm=TRUE))
+temp_family_CTMs_Rep$Treatment <- paste(temp_family_CTMs_Rep$Rear_temp, temp_family_CTMs_Rep$Rep, temp_family_CTMs_Rep$AAFam, sep = "_")
+
+
+temp_family_CTMs_Rep_big_fams <- merge(temp_family_CTMs_Rep, big_fams_list, by="Treatment", all.y =T)
+temp_family_CTMs_Rep_big_fams$Temp_Rep <- paste(temp_family_CTMs_Rep_big_fams$Rear_temp, temp_family_CTMs_Rep_big_fams$Rep, sep = "_")
+
+slopes_Rep <- temp_family_CTMs_Rep_big_fams %>%
   group_by(AAFam) %>%
-  filter(n_distinct(Rear_temp) > 1) %>%  # Only keep families with both temps
+  filter(n_distinct(Temp_Rep) == 4)
+
+#slopes <- temp_family_CTMs %>%
+#  group_by(AAFam) %>%
+#  filter(n_distinct(Rear_temp) > 1) %>%  # Only keep families with both temps
+#  summarize(slope = coef(lm(mean_ctm ~ Rear_temp))[2]) #2 keeps only slopes
+
+#slopes_Rep <- temp_family_CTMs_Rep_big_fams %>%
+#  group_by(AAFam) %>%
+#  filter(n_distinct(Rep) == 2) %>%  # Only keep families with both temps
+#  summarize(slope = coef(lmer(mean_ctm ~ Rear_temp + (1|Rep)))[2])
+
+###
+slopes_final <- slopes_Rep %>%
+  group_by(AAFam) %>%
   summarize(slope = coef(lm(mean_ctm ~ Rear_temp))[2]) #2 keeps only slopes
 
+slopes <- slopes_final
+###
 
-family_DI <- read.delim2("C:/Users/joann/OneDrive/Documents/UCDavis/Whitehead_lab/Smelt_sequencing/2021_spawning/Analyses/AlphaAssign/Family_DIs.txt")
+family_DI <- read.delim2("Family_DIs.txt")
 
 
 slope_DI <- merge(slopes, family_DI, by="AAFam")
@@ -100,15 +151,15 @@ slopes.model1 = lm(slope ~ DI, data = slope_DI_LH)
 Anova(slopes.model1, test.statistic = "F")
 ''' ## with family greater than 0, 18 low families, and 27 high families
 Response: slope
-          Sum Sq Df F value  Pr(>F)  
+          Sum Sq Df F value  Pr(>F)
 DI         6.832  1  3.8334 0.05675 .
-Residuals 76.631 43    
+Residuals 76.631 43
 '''
 
 ''' ## with family greater than 1, 12 families for low, 20 families for high
            Sum Sq Df F value Pr(>F)
 DI         2.4059  1  2.7498 0.1077
-Residuals 26.2486 30  
+Residuals 26.2486 30
 '''
 
 
@@ -135,7 +186,7 @@ ggplot(data=ctm_pedigree_DI, aes(x=assigned_DI, y=Offspring_DI.x)) +
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         panel.background = element_blank(), axis.line = element_line(colour = "black"),
         plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
-        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14), 
+        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14),
         strip.background = element_blank(), strip.placement = "outside", strip.text = element_text(size=14)) +
   scale_y_continuous(breaks=seq(4,12,1))
 
@@ -171,7 +222,7 @@ plot1 <- ggplot(data=LowHigh, aes(x=DI, y=CTM, color=Rear_temp)) +
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         panel.background = element_blank(), axis.line = element_line(colour = "black"),
         plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
-        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14), 
+        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14),
         strip.background = element_blank(), strip.placement = "outside", strip.text = element_text(size=14))+
   scale_y_continuous(breaks=seq(15,34,1))
 
@@ -201,9 +252,9 @@ plot2 <- ggplot(data=temp_family_CTMs_DI_LH_Rep2, aes(x=Rear_temp.x, y=mean_ctm,
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         panel.background = element_blank(), axis.line = element_line(colour = "black"),
         plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
-        axis.text = element_text(size=14), axis.title = element_text(size=14), 
-        legend.text = element_text(size=14), 
-        strip.background = element_blank(), strip.placement = "outside", 
+        axis.text = element_text(size=14), axis.title = element_text(size=14),
+        legend.text = element_text(size=14),
+        strip.background = element_blank(), strip.placement = "outside",
         strip.text = element_text(size=14))+
   scale_y_continuous(breaks=seq(15,34,1))
 
@@ -241,15 +292,15 @@ ctm.survival <- merge(temp_family_CTMs_Rep_big_fams, treatment_family_model_DI2,
 ctm.survival.model = lm(mean_ctm ~ survival, data=ctm.survival)
 Anova(ctm.survival.model, test.statistic = "F")
 '''
-          Sum Sq  Df F value    Pr(>F)    
+          Sum Sq  Df F value    Pr(>F)
 survival   47.53   1  19.634 1.218e-05 ***
 Residuals 951.41 393
 '''
 ctm.survival.model = lmer(mean_ctm ~ survival + (1|System:DI), data=ctm.survival)
 Anova(ctm.survival.model, test.statistic = "F")
 '''
-          Sum Sq  Df F value    Pr(>F)    
-              F Df Df.res    Pr(>F)    
+          Sum Sq  Df F value    Pr(>F)
+              F Df Df.res    Pr(>F)
 survival 22.403  1 384.46 3.111e-06 ***
 '''
 plot(mean_ctm ~ survival, data=ctm.survival)
@@ -263,7 +314,7 @@ ggplot(data=ctm.survival, aes(x=survival, y=mean_ctm, color=Rear_temp)) +
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         panel.background = element_blank(), axis.line = element_line(colour = "black"),
         plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
-        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14), 
+        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14),
         strip.background = element_blank(), strip.placement = "outside", strip.text = element_text(size=14))
 # scale_y_continuous(breaks=seq(20,30,1))
 
@@ -291,7 +342,7 @@ ggplot(data=slope.survival, aes(x=mean_survival, y=slope)) +
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         panel.background = element_blank(), axis.line = element_line(colour = "black"),
         plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
-        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14), 
+        axis.text = element_text(size=14), axis.title = element_text(size=14), legend.text = element_text(size=14),
         strip.background = element_blank(), strip.placement = "outside", strip.text = element_text(size=14))
 # scale_y_continuous(breaks=seq(20,30,1))
 
@@ -304,4 +355,3 @@ Anova(slope.survival.model, test.statistic = "F")
 mean_survival   0.085  1  0.0389 0.8442
 Residuals     178.256 82
 '''
-
